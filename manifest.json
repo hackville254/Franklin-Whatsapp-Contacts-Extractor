@@ -3,7 +3,8 @@
   "name": "WA Group Contacts Extractor",
   "version": "1.0",
   "description": "Extract contacts from WhatsApp group chats.",
-  "permissions": ["activeTab", "scripting"],
+  "permissions": ["activeTab", "scripting", "tabs", "storage"],
+  "host_permissions": ["https://web.whatsapp.com/*"],
   "background": {
     "service_worker": "background.js"
   },

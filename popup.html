@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Franklin Whatsapp Contacts Extractor</title>
+  <title>Branddeo WhatsApp Tool</title>
   <style>
     body {
       width: 320px;
@@ -54,6 +54,38 @@
     button:disabled {
       opacity: 0.65;
       cursor: not-allowed;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+    }
+
+    .tabBtn {
+      background: #ffffff;
+      color: #0f172a;
+      border: 1px solid #e2e8f0;
+      padding: 8px 10px;
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 700;
+      flex: 1;
+    }
+
+    .tabBtn.active {
+      background: #0f172a;
+      color: #ffffff;
+      border-color: #0f172a;
+    }
+
+    .panel {
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .panel.active {
+      display: flex;
     }
 
     .status {
@@ -151,26 +183,100 @@
     .footer a:hover {
       text-decoration: underline;
     }
+
+    input[type="text"],
+    input[type="number"],
+    input[type="file"],
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 10px;
+      font-size: 12px;
+      background: #ffffff;
+    }
+
+    textarea {
+      resize: vertical;
+      line-height: 1.35;
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .row > * {
+      flex: 1;
+    }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1 class="title">Franklin Whatsapp Contacts Extractor</h1>
-    <p class="subtitle">Open members list (group or community), then start export.</p>
+    <h1 class="title">Branddeo WhatsApp Tool</h1>
+    <p class="subtitle">Extract contacts and send messages via WhatsApp Web.</p>
 
-    <div class="actions">
-      <button id="extract">Export</button>
+    <div class="tabs">
+      <button id="tabExtract" class="tabBtn active" type="button">Extract</button>
+      <button id="tabSend" class="tabBtn" type="button">Send</button>
     </div>
 
-    <div class="status" id="statusBox">
-      <span class="spinner" id="spinner" aria-hidden="true"></span>
-      <div class="statusText">
-        <div class="statusLine" id="statusLine">Ready</div>
-        <div class="statusMeta" id="statusMeta">No export running</div>
-        <div class="progress" aria-hidden="true">
-          <div class="bar" id="bar"></div>
+    <div id="panelExtract" class="panel active">
+      <div class="actions">
+        <button id="extract" type="button">Export contacts</button>
+      </div>
+
+      <div class="status" id="statusBox">
+        <span class="spinner" id="spinner" aria-hidden="true"></span>
+        <div class="statusText">
+          <div class="statusLine" id="statusLine">Ready</div>
+          <div class="statusMeta" id="statusMeta">No export running</div>
+          <div class="progress" aria-hidden="true">
+            <div class="bar" id="bar"></div>
+          </div>
         </div>
       </div>
+    </div>
+
+    <div id="panelSend" class="panel">
+      <div class="status">
+        <span class="spinner" id="sendSpinner" aria-hidden="true"></span>
+        <div class="statusText">
+          <div class="statusLine" id="sendStatusLine">Ready</div>
+          <div class="statusMeta" id="sendStatusMeta">Sent: 0 | Remaining: 0</div>
+          <div class="progress" aria-hidden="true">
+            <div class="bar" id="sendBar"></div>
+          </div>
+          <div class="statusMeta" id="recipientsMeta">Recipients: 0</div>
+        </div>
+      </div>
+
+      <input id="importFile" type="file" accept=".xlsx,.xls,.csv" />
+      <input id="singlePhone" type="text" placeholder="Single phone (with country code)" />
+      <textarea id="messageText" rows="4" placeholder="Message text (placeholders: {name} {phone} {index} {id})"></textarea>
+
+      <input id="imageFile" type="file" accept="image/*" />
+
+      <div class="row">
+        <label style="display:flex;gap:8px;align-items:center;font-size:12px;color:#334155;">
+          <input id="randomDelay" type="checkbox" checked />
+          Random delay
+        </label>
+        <input id="delayMinMs" type="number" min="800" step="100" value="1500" />
+        <input id="delayMaxMs" type="number" min="800" step="100" value="3000" />
+      </div>
+
+      <div class="row">
+        <button id="startSend" type="button" disabled>Start</button>
+        <button id="stopSend" type="button" disabled style="background:#ef4444;">Stop</button>
+      </div>
+
+      <div class="row">
+        <button id="openNext" type="button" disabled>Send next</button>
+      </div>
+
     </div>
 
     <div class="footer">
@@ -179,6 +285,7 @@
     </div>
   </div>
 
+  <script src="xlsx.full.min.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

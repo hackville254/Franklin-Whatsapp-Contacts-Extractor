@@ -732,6 +732,15 @@
       downloadCsv(contacts, { groupTitle, extractedAt });
     }
 
+    try {
+      window.__BRANDDEO_WA_EXTRACTOR_LAST = {
+        contacts,
+        expected: expected ?? null,
+        groupTitle,
+        extractedAt: extractedAt.toISOString(),
+      };
+    } catch {}
+
     report({
       stage: "Done",
       state: "done",
@@ -740,6 +749,18 @@
       indeterminate: false,
       percent: 100,
     });
+
+    try {
+      chrome.runtime.sendMessage({
+        type: "wa_extractor_done",
+        payload: {
+          contacts,
+          expected: expected ?? null,
+          groupTitle,
+          extractedAt: extractedAt.toISOString(),
+        },
+      });
+    } catch {}
     alert(`Export done: ${contacts.length} contact(s).`);
   };
 
