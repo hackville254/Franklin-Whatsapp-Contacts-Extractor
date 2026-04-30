@@ -19,7 +19,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const singlePhoneInput = document.getElementById("singlePhone");
   const addPhoneButton = document.getElementById("addPhone");
   const messageText = document.getElementById("messageText");
-  const imageFileInput = document.getElementById("imageFile");
   const randomDelayCheckbox = document.getElementById("randomDelay");
   const delayMinMsInput = document.getElementById("delayMinMs");
   const delayMaxMsInput = document.getElementById("delayMaxMs");
@@ -89,7 +88,6 @@ document.addEventListener("DOMContentLoaded", () => {
   let lastTabId = null;
   let recipients = [];
   let nextIndex = 0;
-  let imagePayload = null;
   let sending = false;
 
   const ensureActiveTabId = () =>
@@ -287,32 +285,38 @@ document.addEventListener("DOMContentLoaded", () => {
       if (sendStatusLine) {
         sendStatusLine.textContent = files.length > 5 ? "Importing first 5 files..." : "Importing...";
       }
+      if (sendStatusMeta) sendStatusMeta.textContent = "Reading files...";
 
-      const readAsText = () =>
+      const readAsText = (file) =>
         new Promise((resolve, reject) => {
           const r = new FileReader();
           r.onload = () => resolve(String(r.result || ""));
           r.onerror = () => reject(new Error("read failed"));
-          r.readAsText(currentFile);
+          r.readAsText(file);
         });
 
-      const readAsArrayBuffer = () =>
+      const readAsArrayBuffer = (file) =>
         new Promise((resolve, reject) => {
           const r = new FileReader();
           r.onload = () => resolve(r.result);
           r.onerror = () => reject(new Error("read failed"));
-          r.readAsArrayBuffer(currentFile);
+          r.readAsArrayBuffer(file);
         });
 
       try {
         let imported = 0;
+        let importedContacts = 0;
+        let totalRowsInFiles = 0;
+        const importedPhones = new Set();
+
         for (const currentFile of picked) {
           const lower = String(currentFile.name || "").toLowerCase();
           if (sendStatusLine) sendStatusLine.textContent = `Importing: ${currentFile.name}`;
 
           if (lower.endsWith(".csv")) {
-            const text = await readAsText();
+            const text = await readAsText(currentFile);
             const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+            totalRowsInFiles += Math.max(0, lines.length - 1);
             const items = [];
             for (const line of lines.slice(0, 300000)) {
               const parts = line.split(/[;,]/).map((p) => p.trim());
@@ -320,19 +324,60 @@ document.addEventListener("DOMContentLoaded", () => {
               const nm = parts[1] || "";
               items.push({ phone, name: nm });
             }
+            for (const it of items) {
+              const ph = sanitizeDigits(it?.phone);
+              if (ph && ph.length >= 10) importedPhones.add(ph);
+            }
             addRecipients(items);
             imported += 1;
             continue;
           }
 
-          const buf = await readAsArrayBuffer();
+          const buf = await readAsArrayBuffer(currentFile);
           const XLSX = window.XLSX;
           if (!XLSX?.read) continue;
           const wb = XLSX.read(buf, { type: "array" });
-          const sheetName = wb.SheetNames?.[0];
-          const ws = wb.Sheets?.[sheetName];
+          const pickWorksheet = () => {
+            if (wb.Sheets?.Contacts) return { name: "Contacts", ws: wb.Sheets.Contacts };
+            if (wb.Sheets?.contacts) return { name: "contacts", ws: wb.Sheets.contacts };
+            if (wb.SheetNames?.includes("Contacts")) return { name: "Contacts", ws: wb.Sheets["Contacts"] };
+            if (wb.SheetNames?.includes("contacts")) return { name: "contacts", ws: wb.Sheets["contacts"] };
+
+            const phoneHeaderKeys = [
+              "phone",
+              "Phone",
+              "number",
+              "Number",
+              "numero",
+              "Numero",
+              "numéro",
+              "Numéro",
+              "tel",
+              "Tel",
+              "telephone",
+              "Telephone",
+              "mobile",
+              "Mobile",
+            ];
+
+            for (const name of wb.SheetNames || []) {
+              const ws = wb.Sheets?.[name];
+              if (!ws) continue;
+              const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false });
+              const header = rows?.[0] || [];
+              const headerStr = header.map((h) => String(h || "")).join("|");
+              if (phoneHeaderKeys.some((k) => headerStr.includes(k))) return { name, ws };
+            }
+
+            const fallbackName = wb.SheetNames?.[0];
+            return fallbackName ? { name: fallbackName, ws: wb.Sheets?.[fallbackName] } : { name: null, ws: null };
+          };
+
+          const pickedWs = pickWorksheet();
+          const ws = pickedWs.ws;
           if (!ws) continue;
           const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+          totalRowsInFiles += rows.length;
           const items = [];
           for (const r of rows) {
             const phone =
@@ -342,19 +387,32 @@ document.addEventListener("DOMContentLoaded", () => {
               r.Number ||
               r.numero ||
               r.Numero ||
+              r["numéro"] ||
+              r["Numéro"] ||
               r.tel ||
               r.Tel ||
+              r.telephone ||
+              r.Telephone ||
               r.mobile ||
               r.Mobile;
             const nm = r.name || r.Name || r.nom || r.Nom || "";
             items.push({ phone, name: nm });
           }
+          for (const it of items) {
+            const ph = sanitizeDigits(it?.phone);
+            if (ph && ph.length >= 10) importedPhones.add(ph);
+          }
           addRecipients(items);
           imported += 1;
         }
-        if (sendStatusLine) sendStatusLine.textContent = `Imported: ${imported} file(s)`;
+        importedContacts = importedPhones.size;
+        if (sendStatusLine) sendStatusLine.textContent = `Imported contacts: ${importedContacts}`;
+        if (sendStatusMeta) {
+          sendStatusMeta.textContent = `File total: ${totalRowsInFiles} | Sendable: ${importedContacts}`;
+        }
       } catch {
         if (sendStatusLine) sendStatusLine.textContent = "Import failed";
+        if (sendStatusMeta) sendStatusMeta.textContent = "File total: 0 | Sendable: 0";
       }
     });
   }
@@ -376,32 +434,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (addPhoneButton) addPhoneButton.addEventListener("click", addFromInput);
   }
 
-  if (imageFileInput) {
-    imageFileInput.addEventListener("change", async (e) => {
-      const file = e.target?.files?.[0];
-      if (!file) {
-        imagePayload = null;
-        return;
-      }
-      const readAsArrayBuffer = () =>
-        new Promise((resolve, reject) => {
-          const r = new FileReader();
-          r.onload = () => resolve(r.result);
-          r.onerror = () => reject(new Error("read failed"));
-          r.readAsArrayBuffer(file);
-        });
-      try {
-        const data = await readAsArrayBuffer();
-        imagePayload = { name: String(file.name || "image"), type: String(file.type || "image/*"), data };
-        if (sendStatusLine) sendStatusLine.textContent = `Image loaded: ${imagePayload.name}`;
-      } catch {
-        imagePayload = null;
-      } finally {
-        imageFileInput.value = "";
-      }
-    });
-  }
-
   if (openNextButton) {
     openNextButton.addEventListener("click", async () => {
       await ensureActiveTabId();
@@ -414,7 +446,6 @@ document.addEventListener("DOMContentLoaded", () => {
         tabId: lastTabId,
         recipient: item,
         text,
-        image: imagePayload,
       });
       nextIndex += 1;
     });
@@ -437,7 +468,6 @@ document.addEventListener("DOMContentLoaded", () => {
         randomDelay,
         delayMinMs,
         delayMaxMs,
-        image: imagePayload,
       });
       sending = true;
       refreshSendUi();

@@ -9,6 +9,18 @@ let sendJob = null;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const sleepCancelable = async (ms) => {
+  const slice = 120;
+  let remaining = Math.max(0, Number(ms || 0));
+  while (remaining > 0) {
+    if (sendJob?.cancelled) return false;
+    const step = Math.min(slice, remaining);
+    await sleep(step);
+    remaining -= step;
+  }
+  return !sendJob?.cancelled;
+};
+
 const sendProgress = (payload) => {
   try {
     chrome.runtime.sendMessage({ type: "wa_sender_progress", ...payload });
@@ -50,12 +62,15 @@ const uiOpenChatByPhone = (tabId, phoneDigits, timeoutMs) => {
     const startedAt = Date.now();
 
     const tick = () => {
+      if (sendJob?.cancelled) return resolve(false);
       chrome.scripting.executeScript(
         {
           target: { tabId },
           args: [phoneDigits],
           func: async (digits) => {
             const sleepInner = (ms) => new Promise((r) => setTimeout(r, ms));
+
+            const cancelled = () => Boolean(window.__BRANDDEO_SENDER_CANCEL);
 
             const clickClosest = (node) => {
               if (!node) return false;
@@ -67,6 +82,7 @@ const uiOpenChatByPhone = (tabId, phoneDigits, timeoutMs) => {
             const waitFor = async (fn, ms) => {
               const start = Date.now();
               while (Date.now() - start < ms) {
+                if (cancelled()) return null;
                 const v = fn();
                 if (v) return v;
                 await sleepInner(120);
@@ -139,6 +155,7 @@ const uiOpenChatByPhone = (tabId, phoneDigits, timeoutMs) => {
               }
 
               for (const ch of text) {
+                if (cancelled()) return;
                 try {
                   document.execCommand("insertText", false, ch);
                 } catch {
@@ -195,6 +212,7 @@ const uiOpenChatByPhone = (tabId, phoneDigits, timeoutMs) => {
             const wanted = normalize(digits);
             let stable = 0;
             for (let attempt = 0; attempt < 6; attempt += 1) {
+              if (cancelled()) return { ok: false, step: "cancelled" };
               if (attempt < 2) await setLexicalInputValue(input, wanted);
               else await typeLexicalSlow(input, wanted);
               await sleepInner(220);
@@ -209,6 +227,7 @@ const uiOpenChatByPhone = (tabId, phoneDigits, timeoutMs) => {
             const cell = await (async () => {
               const start = Date.now();
               while (Date.now() - start < 12_000) {
+                if (cancelled()) return null;
                 const got = normalize(input.innerText);
                 if (got !== wanted) {
                   await typeLexicalSlow(input, wanted);
@@ -227,6 +246,7 @@ const uiOpenChatByPhone = (tabId, phoneDigits, timeoutMs) => {
 
             const composer = await waitFor(
               () => {
+                if (cancelled()) return null;
                 const foot = document.querySelector("footer");
                 const candidates = (foot || document).querySelectorAll('div[contenteditable="true"][role="textbox"]');
                 for (const el of candidates) {
@@ -245,6 +265,7 @@ const uiOpenChatByPhone = (tabId, phoneDigits, timeoutMs) => {
           },
         },
         (results) => {
+          if (sendJob?.cancelled) return resolve(false);
           const res = results?.[0]?.result;
           if (res?.ok) return resolve(true);
           if (Date.now() - startedAt > timeoutMs) return resolve(false);
@@ -261,6 +282,7 @@ const uiFillMessage = (tabId, messageText, timeoutMs) => {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     const tick = () => {
+      if (sendJob?.cancelled) return resolve(false);
       chrome.scripting.executeScript(
         {
           target: { tabId },
@@ -268,8 +290,10 @@ const uiFillMessage = (tabId, messageText, timeoutMs) => {
           func: async (text) => {
             const sleepInner = (ms) => new Promise((r) => setTimeout(r, ms));
             const isVisible = (el) => Boolean(el && el.offsetParent !== null);
+            const cancelled = () => Boolean(window.__BRANDDEO_SENDER_CANCEL);
             const start = Date.now();
             while (Date.now() - start < 8000) {
+              if (cancelled()) return false;
               const foot = document.querySelector("footer");
               const candidates = (foot || document).querySelectorAll('div[contenteditable="true"][role="textbox"]');
               for (const el of candidates) {
@@ -295,6 +319,7 @@ const uiFillMessage = (tabId, messageText, timeoutMs) => {
           },
         },
         (results) => {
+          if (sendJob?.cancelled) return resolve(false);
           const ok = Boolean(results?.[0]?.result);
           if (ok) return resolve(true);
           if (Date.now() - startedAt > timeoutMs) return resolve(false);
@@ -310,6 +335,7 @@ const autoClickSend = (tabId, timeoutMs) => {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     const tick = () => {
+      if (sendJob?.cancelled) return resolve(false);
       chrome.scripting.executeScript(
         {
           target: { tabId },
@@ -324,6 +350,8 @@ const autoClickSend = (tabId, timeoutMs) => {
             const byIcon =
               document.querySelector('span[data-icon="send"]') ||
               document.querySelector('span[data-icon="send-filled"]') ||
+              document.querySelector('span[data-icon="wds-ic-send-filled"]') ||
+              document.querySelector('span[data-testid="wds-ic-send-filled"]') ||
               document.querySelector('span[data-testid="send"]') ||
               (() => {
                 const titleNode = [...document.querySelectorAll("svg title")].find((t) => t.textContent === "send");
@@ -336,6 +364,12 @@ const autoClickSend = (tabId, timeoutMs) => {
                 btn.click();
                 return true;
               }
+            }
+
+            const byAria = document.querySelector('[role="button"][aria-label="Envoyer"], button[aria-label="Envoyer"]');
+            if (isVisible(byAria)) {
+              byAria.click();
+              return true;
             }
 
             const buttons = document.querySelectorAll('button[aria-label], button[title], div[role="button"][aria-label]');
@@ -351,111 +385,11 @@ const autoClickSend = (tabId, timeoutMs) => {
           },
         },
         (results) => {
+          if (sendJob?.cancelled) return resolve(false);
           const ok = Boolean(results?.[0]?.result);
           if (ok) return resolve(true);
           if (Date.now() - startedAt > timeoutMs) return resolve(false);
           setTimeout(tick, 300);
-        }
-      );
-    };
-    tick();
-  });
-};
-
-const attachImageWithCaption = (tabId, image, caption, timeoutMs) => {
-  return new Promise((resolve) => {
-    const startedAt = Date.now();
-    const tick = () => {
-      chrome.scripting.executeScript(
-        {
-          target: { tabId },
-          args: [image, caption],
-          func: async (img, cap) => {
-            const sleepInner = (ms) => new Promise((r) => setTimeout(r, ms));
-            const isVisible = (el) => Boolean(el && el.offsetParent !== null);
-
-            const findAttachButton = () => {
-              const candidates = [
-                ...document.querySelectorAll('button[aria-label], button[title], div[role="button"][aria-label]'),
-              ];
-              const labels = ["attach", "joindre", "piece jointe", "attachment"];
-              for (const el of candidates) {
-                const label = String(el.getAttribute("aria-label") || el.getAttribute("title") || "").toLowerCase();
-                if (!label) continue;
-                if (labels.some((w) => label.includes(w))) return el;
-              }
-              const byIcon =
-                document.querySelector('span[data-icon="attach-menu-plus"]') ||
-                document.querySelector('span[data-icon="clip"]') ||
-                document.querySelector('span[data-icon="attach"]');
-              if (byIcon) return byIcon.closest("button, div[role='button']");
-              return null;
-            };
-
-            const click = (el) => {
-              if (!el) return false;
-              el.click();
-              return true;
-            };
-
-            const attachBtn = findAttachButton();
-            click(attachBtn);
-            await sleepInner(250);
-
-            const inputs = [...document.querySelectorAll('input[type="file"]')].filter(isVisible);
-            const pickInput = () => {
-              for (const input of inputs) {
-                const accept = String(input.getAttribute("accept") || "").toLowerCase();
-                if (!accept || accept.includes("image")) return input;
-              }
-              return inputs[0] || null;
-            };
-
-            const input = pickInput();
-            if (!input) return false;
-
-            const arr = img?.data;
-            if (!arr || !(arr instanceof ArrayBuffer)) return false;
-            const type = String(img?.type || "image/jpeg");
-            const name = String(img?.name || "image.jpg");
-            const blob = new Blob([arr], { type });
-            const file = new File([blob], name, { type });
-            const dt = new DataTransfer();
-            dt.items.add(file);
-            input.files = dt.files;
-            input.dispatchEvent(new Event("change", { bubbles: true }));
-
-            const started = Date.now();
-            while (Date.now() - started < 8000) {
-              const boxes = [...document.querySelectorAll('div[contenteditable="true"][role="textbox"]')].filter(isVisible);
-              const labelBox = boxes.find((b) => {
-                const aria = String(b.getAttribute("aria-label") || "").toLowerCase();
-                const title = String(b.getAttribute("title") || "").toLowerCase();
-                const text = `${aria} ${title}`;
-                return text.includes("caption") || text.includes("legende") || text.includes("caption");
-              });
-              const target = labelBox || boxes[boxes.length - 1];
-              if (target) {
-                const text = String(cap || "");
-                target.focus();
-                target.textContent = text;
-                try {
-                  target.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
-                } catch {
-                  target.dispatchEvent(new Event("input", { bubbles: true }));
-                }
-                return true;
-              }
-              await sleepInner(250);
-            }
-            return true;
-          },
-        },
-        (results) => {
-          const ok = Boolean(results?.[0]?.result);
-          if (ok) return resolve(true);
-          if (Date.now() - startedAt > timeoutMs) return resolve(false);
-          setTimeout(tick, 400);
         }
       );
     };
@@ -481,9 +415,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       randomDelay: Boolean(message.randomDelay),
       delayMinMs: Math.max(800, Number(message.delayMinMs || 1500)),
       delayMaxMs: Math.max(800, Number(message.delayMaxMs || message.delayMinMs || 1500)),
-      image: message.image || null,
       index: 0,
     };
+
+    chrome.scripting.executeScript({
+      target: { tabId: sendJob.tabId },
+      func: () => {
+        window.__BRANDDEO_SENDER_CANCEL = false;
+      },
+    });
 
     const renderTemplate = (template, recipient, index) => {
       const phone = String(recipient?.phone ?? recipient?.number ?? recipient ?? "").replace(/[^\d]/g, "");
@@ -518,25 +458,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const text = renderTemplate(sendJob.text, recipient, i);
         sendProgress({ state: "opening", sent: i, total, detail: `Open chat ${i + 1}/${total}` });
         const opened = await uiOpenChatByPhone(sendJob.tabId, phone, 25_000);
+        if (!sendJob || sendJob.cancelled) break;
         if (!opened) {
           sendProgress({ state: "error_one", sent: i, total, detail: `Cannot open ${phone}` });
-          await sleep(pickDelay());
+          await sleepCancelable(pickDelay());
           continue;
         }
 
-        if (sendJob.image) {
-          sendProgress({ state: "attaching", sent: i, total, detail: "Attaching image..." });
-          await attachImageWithCaption(sendJob.tabId, sendJob.image, text, 20_000);
-          await sleep(700);
-        } else {
-          await uiFillMessage(sendJob.tabId, text, 15_000);
-        }
+        await uiFillMessage(sendJob.tabId, text, 15_000);
+        if (!sendJob || sendJob.cancelled) break;
 
         sendProgress({ state: "sending", sent: i, total, detail: "Clicking send..." });
         await autoClickSend(sendJob.tabId, 12_000);
+        if (!sendJob || sendJob.cancelled) break;
 
         sendProgress({ state: "done_one", sent: i + 1, total, detail: `${i + 1}/${total}` });
-        await sleep(pickDelay());
+        await sleepCancelable(pickDelay());
       }
 
       const finished = Boolean(sendJob && !sendJob.cancelled);
@@ -553,19 +490,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const recipient = message.recipient || {};
     const phone = String(recipient?.phone ?? recipient?.number ?? recipient ?? "").replace(/[^\d]/g, "");
     const text = String(message.text || "");
-    const image = message.image || null;
     (async () => {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => {
+            window.__BRANDDEO_SENDER_CANCEL = false;
+          },
+        });
+      } catch {}
       const opened = await uiOpenChatByPhone(tabId, phone, 25_000);
       if (!opened) {
         sendProgress({ state: "error_one", sent: 0, total: 1, detail: `Cannot open ${phone}` });
         return;
       }
-      if (image) {
-        await attachImageWithCaption(tabId, image, text, 20_000);
-        await sleep(500);
-      } else if (text) {
-        await uiFillMessage(tabId, text, 15_000);
-      }
+      if (text) await uiFillMessage(tabId, text, 15_000);
       await autoClickSend(tabId, 12_000);
       sendProgress({ state: "opened_one", sent: 1, total: 1, detail: "Sent" });
     })();
@@ -574,7 +513,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "wa_sender_stop") {
-    if (sendJob) sendJob.cancelled = true;
+    if (sendJob) {
+      sendJob.cancelled = true;
+      const total = sendJob.recipients.length;
+      const sent = (sendJob.index ?? -1) + 1;
+      sendProgress({ state: "stopped", sent, total, detail: "Stopped" });
+      chrome.scripting.executeScript({
+        target: { tabId: sendJob.tabId },
+        func: () => {
+          window.__BRANDDEO_SENDER_CANCEL = true;
+        },
+      });
+    }
     sendResponse({ ok: true });
     return true;
   }
