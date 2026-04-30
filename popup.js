@@ -17,6 +17,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const sendStatusMeta = document.getElementById("sendStatusMeta");
   const importFileInput = document.getElementById("importFile");
   const singlePhoneInput = document.getElementById("singlePhone");
+  const addPhoneButton = document.getElementById("addPhone");
   const messageText = document.getElementById("messageText");
   const imageFileInput = document.getElementById("imageFile");
   const randomDelayCheckbox = document.getElementById("randomDelay");
@@ -121,6 +122,12 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!digits || digits.length < 10) return;
     if (recipients.some((r) => r.phone === digits)) return;
     recipients = [...recipients, { phone: digits, name: String(name || "").trim() }];
+    refreshSendUi();
+  };
+
+  const addRecipients = (items) => {
+    const combined = normalizeRecipientList([...(recipients || []), ...(items || [])]);
+    recipients = combined;
     refreshSendUi();
   };
 
@@ -273,15 +280,20 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (importFileInput) {
     importFileInput.addEventListener("change", async (e) => {
-      const file = e.target?.files?.[0];
-      if (!file) return;
+      const files = Array.from(e.target?.files || []);
+      if (files.length === 0) return;
+
+      const picked = files.slice(0, 5);
+      if (sendStatusLine) {
+        sendStatusLine.textContent = files.length > 5 ? "Importing first 5 files..." : "Importing...";
+      }
 
       const readAsText = () =>
         new Promise((resolve, reject) => {
           const r = new FileReader();
           r.onload = () => resolve(String(r.result || ""));
           r.onerror = () => reject(new Error("read failed"));
-          r.readAsText(file);
+          r.readAsText(currentFile);
         });
 
       const readAsArrayBuffer = () =>
@@ -289,45 +301,60 @@ document.addEventListener("DOMContentLoaded", () => {
           const r = new FileReader();
           r.onload = () => resolve(r.result);
           r.onerror = () => reject(new Error("read failed"));
-          r.readAsArrayBuffer(file);
+          r.readAsArrayBuffer(currentFile);
         });
 
       try {
-        const lower = String(file.name || "").toLowerCase();
-        if (lower.endsWith(".csv")) {
-          const text = await readAsText();
-          const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        let imported = 0;
+        for (const currentFile of picked) {
+          const lower = String(currentFile.name || "").toLowerCase();
+          if (sendStatusLine) sendStatusLine.textContent = `Importing: ${currentFile.name}`;
+
+          if (lower.endsWith(".csv")) {
+            const text = await readAsText();
+            const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+            const items = [];
+            for (const line of lines.slice(0, 300000)) {
+              const parts = line.split(/[;,]/).map((p) => p.trim());
+              const phone = parts[0];
+              const nm = parts[1] || "";
+              items.push({ phone, name: nm });
+            }
+            addRecipients(items);
+            imported += 1;
+            continue;
+          }
+
+          const buf = await readAsArrayBuffer();
+          const XLSX = window.XLSX;
+          if (!XLSX?.read) continue;
+          const wb = XLSX.read(buf, { type: "array" });
+          const sheetName = wb.SheetNames?.[0];
+          const ws = wb.Sheets?.[sheetName];
+          if (!ws) continue;
+          const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
           const items = [];
-          for (const line of lines.slice(0, 200000)) {
-            const parts = line.split(/[;,]/).map((p) => p.trim());
-            const phone = parts[0];
-            const nm = parts[1] || "";
+          for (const r of rows) {
+            const phone =
+              r.phone ||
+              r.Phone ||
+              r.number ||
+              r.Number ||
+              r.numero ||
+              r.Numero ||
+              r.tel ||
+              r.Tel ||
+              r.mobile ||
+              r.Mobile;
+            const nm = r.name || r.Name || r.nom || r.Nom || "";
             items.push({ phone, name: nm });
           }
-          setRecipients(items);
-          return;
+          addRecipients(items);
+          imported += 1;
         }
-
-        const buf = await readAsArrayBuffer();
-        const XLSX = window.XLSX;
-        if (!XLSX?.read) return;
-        const wb = XLSX.read(buf, { type: "array" });
-        const sheetName = wb.SheetNames?.[0];
-        const ws = wb.Sheets?.[sheetName];
-        if (!ws) return;
-        const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
-        const items = [];
-        for (const r of rows) {
-          const phone =
-            r.phone || r.Phone || r.number || r.Number || r.numero || r.Numero || r.tel || r.Tel || r.mobile || r.Mobile;
-          const nm = r.name || r.Name || r.nom || r.Nom || "";
-          items.push({ phone, name: nm });
-        }
-        setRecipients(items);
+        if (sendStatusLine) sendStatusLine.textContent = `Imported: ${imported} file(s)`;
       } catch {
-        setRecipients([]);
-      } finally {
-        importFileInput.value = "";
+        if (sendStatusLine) sendStatusLine.textContent = "Import failed";
       }
     });
   }
@@ -336,13 +363,17 @@ document.addEventListener("DOMContentLoaded", () => {
     const addFromInput = () => {
       const v = String(singlePhoneInput.value || "").trim();
       if (!v) return;
+      const before = recipients.length;
       mergeRecipient(v, "");
-      singlePhoneInput.value = "";
+      const after = recipients.length;
+      if (sendStatusLine) {
+        sendStatusLine.textContent = after > before ? "Added" : "Already added";
+      }
     };
     singlePhoneInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") addFromInput();
     });
-    singlePhoneInput.addEventListener("blur", addFromInput);
+    if (addPhoneButton) addPhoneButton.addEventListener("click", addFromInput);
   }
 
   if (imageFileInput) {

@@ -114,6 +114,45 @@ const uiOpenChatByPhone = (tabId, phoneDigits, timeoutMs) => {
               }
             };
 
+            const typeLexicalSlow = async (el, value) => {
+              const text = String(value || "");
+              el.focus();
+
+              try {
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+              } catch {}
+
+              try {
+                document.execCommand("delete", false, null);
+              } catch {
+                el.textContent = "";
+              }
+
+              try {
+                el.dispatchEvent(new InputEvent("input", { bubbles: true, data: "", inputType: "deleteContentBackward" }));
+              } catch {
+                el.dispatchEvent(new Event("input", { bubbles: true }));
+              }
+
+              for (const ch of text) {
+                try {
+                  document.execCommand("insertText", false, ch);
+                } catch {
+                  el.textContent = `${el.textContent || ""}${ch}`;
+                }
+                try {
+                  el.dispatchEvent(new InputEvent("input", { bubbles: true, data: ch, inputType: "insertText" }));
+                } catch {
+                  el.dispatchEvent(new Event("input", { bubbles: true }));
+                }
+                await sleepInner(35 + Math.floor(Math.random() * 45));
+              }
+            };
+
             const newChatIcon = document.querySelector('span[data-testid="new-chat-outline"]');
             if (newChatIcon) clickClosest(newChatIcon);
 
@@ -156,7 +195,8 @@ const uiOpenChatByPhone = (tabId, phoneDigits, timeoutMs) => {
             const wanted = normalize(digits);
             let stable = 0;
             for (let attempt = 0; attempt < 6; attempt += 1) {
-              await setLexicalInputValue(input, wanted);
+              if (attempt < 2) await setLexicalInputValue(input, wanted);
+              else await typeLexicalSlow(input, wanted);
               await sleepInner(220);
               const got = normalize(input.innerText);
               if (got === wanted) stable += 1;
@@ -171,7 +211,7 @@ const uiOpenChatByPhone = (tabId, phoneDigits, timeoutMs) => {
               while (Date.now() - start < 12_000) {
                 const got = normalize(input.innerText);
                 if (got !== wanted) {
-                  await setLexicalInputValue(input, wanted);
+                  await typeLexicalSlow(input, wanted);
                   await sleepInner(180);
                 }
 

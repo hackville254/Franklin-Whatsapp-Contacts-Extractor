@@ -253,8 +253,11 @@
         </div>
       </div>
 
-      <input id="importFile" type="file" accept=".xlsx,.xls,.csv" />
-      <input id="singlePhone" type="text" placeholder="Single phone (with country code)" />
+      <input id="importFile" type="file" accept=".xlsx,.xls,.csv" multiple />
+      <div class="row">
+        <input id="singlePhone" type="text" placeholder="Single phone (with country code)" />
+        <button id="addPhone" type="button" style="flex:0 0 auto; width:92px; background:#0f172a;">Add</button>
+      </div>
       <textarea id="messageText" rows="4" placeholder="Message text (placeholders: {name} {phone} {index} {id})"></textarea>
 
       <input id="imageFile" type="file" accept="image/*" />
