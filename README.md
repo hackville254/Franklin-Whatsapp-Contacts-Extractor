@@ -23,3 +23,4 @@ Open [Edge Addons](https://microsoftedge.microsoft.com/addons/detail/wa-group-co
 11. Press 'Control+C'
 12. Navigate to any empty column and press and hold 'Alt' then press "H, V, T" in a sequence.
 13. Voila now you have useable contact numbers for lead generation. 
+# Franklin-Whatsapp-Contacts-Extractor
