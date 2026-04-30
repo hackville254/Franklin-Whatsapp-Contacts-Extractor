@@ -100,6 +100,77 @@
     return "";
   };
 
+  const extractIndexHintFromElement = (el) => {
+    const attrsToTry = ["aria-posinset", "aria-rowindex", "data-index", "data-rowindex", "data-idx"];
+
+    const parsePositiveInt = (value) => {
+      const raw = String(value ?? "").replace(/[^\d]/g, "");
+      if (!raw) return null;
+      const n = Number.parseInt(raw, 10);
+      if (!Number.isFinite(n) || n <= 0) return null;
+      return n;
+    };
+
+    const tryNode = (node) => {
+      if (!node?.getAttribute) return null;
+      for (const attr of attrsToTry) {
+        const v = node.getAttribute(attr);
+        const n = parsePositiveInt(v);
+        if (n != null) return n;
+      }
+      return null;
+    };
+
+    const direct = tryNode(el);
+    if (direct != null) return direct;
+
+    const descendants = el?.querySelectorAll?.("*") ?? [];
+    for (const node of descendants) {
+      const n = tryNode(node);
+      if (n != null) return n;
+    }
+    return null;
+  };
+
+  const hashString = (input) => {
+    const s = String(input ?? "");
+    let h = 5381;
+    for (let i = 0; i < s.length; i += 1) {
+      h = ((h << 5) + h) ^ s.charCodeAt(i);
+    }
+    return (h >>> 0).toString(36);
+  };
+
+  const extractIdentityFingerprint = (row) => {
+    const root = row;
+    const values = [];
+
+    const pushIfUseful = (v) => {
+      const s = String(v ?? "").replace(/\s+/g, " ").trim();
+      if (!s) return;
+      if (s.length >= 8 || /\d/.test(s) || /@c\.us/i.test(s)) values.push(s);
+    };
+
+    pushIfUseful(root?.getAttribute?.("aria-label"));
+    pushIfUseful(root?.getAttribute?.("title"));
+    pushIfUseful(root?.getAttribute?.("href"));
+    pushIfUseful(root?.getAttribute?.("data-id"));
+    pushIfUseful(root?.getAttribute?.("id"));
+    pushIfUseful(root?.textContent);
+
+    const nodes = root?.querySelectorAll?.("*") ?? [];
+    for (let i = 0; i < nodes.length && values.length < 80; i += 1) {
+      const n = nodes[i];
+      pushIfUseful(n?.getAttribute?.("aria-label"));
+      pushIfUseful(n?.getAttribute?.("title"));
+      pushIfUseful(n?.getAttribute?.("href"));
+      pushIfUseful(n?.getAttribute?.("data-id"));
+      pushIfUseful(n?.getAttribute?.("id"));
+    }
+
+    return values.join("|");
+  };
+
   const extractPhoneFromElement = (el) => {
     if (!el) return "";
 
@@ -296,11 +367,6 @@
       if (!text) continue;
       if (isProbablyUiRow(text)) continue;
 
-      const hasSelectable = el.querySelector('span[data-testid="selectable-text"]') != null;
-      const hasTitle = el.querySelector("span[title]") != null;
-      const hasPhone = Boolean(extractPhoneFromString(text)) || Boolean(extractFromPossibleJid(text));
-      if (!hasSelectable && !hasTitle && !hasPhone) continue;
-
       rows.push(el);
     }
     return rows;
@@ -387,15 +453,13 @@
     const number = isPhoneLike(label) ? normalizePhone(label) : "";
     const name = number ? "" : label;
     const jid = extractJidFromElement(row);
-    const rowTextKey = String(row?.textContent || "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 220)
-      .toLowerCase();
-    const key = number ? `n:${number}` : jid ? `j:${jid}` : `t:${rowTextKey}`;
+    const idx = extractIndexHintFromElement(row);
+    const fingerprint = extractIdentityFingerprint(row);
+    const key =
+      number ? `n:${number}` : jid ? `j:${jid}` : idx != null ? `i:${idx}` : fingerprint ? `h:${hashString(fingerprint)}` : "";
 
     if (!name && !number) return false;
-    if (!key || key === "t:") return false;
+    if (!key) return false;
     if (seenByKey.has(key)) return false;
     seenByKey.add(key);
 
@@ -417,10 +481,18 @@
     scrollable.scrollTop = 0;
     await sleep(200);
 
-    let stableNoNewRounds = 0;
-    let lastContactsCount = -1;
+    let stableRounds = 0;
+    let lastSeenKeySize = -1;
+    let lastScrollTop = -1;
+    let lastLoadedCount = -1;
+    let lastLastRowSig = "";
 
-    for (let round = 0; round < 200; round += 1) {
+    const initialRows = collectParticipantRows(container);
+    const visibleCount = Math.max(8, initialRows.length || 0);
+    const targetRounds = expected ? Math.ceil(expected / visibleCount) + 250 : 900;
+    const maxRounds = Math.min(5000, Math.max(400, targetRounds));
+
+    for (let round = 0; round < maxRounds; round += 1) {
       const rows = collectParticipantRows(container);
       for (const row of rows) {
         addRowToContacts(row, { contacts, seenByKey });
@@ -437,13 +509,6 @@
 
       if (expected != null && contacts.length >= expected) break;
 
-      if (contacts.length === lastContactsCount) {
-        stableNoNewRounds += 1;
-      } else {
-        stableNoNewRounds = 0;
-      }
-      lastContactsCount = contacts.length;
-
       const lastRow = rows[rows.length - 1];
       if (lastRow?.scrollIntoView) {
         lastRow.scrollIntoView({ block: "end" });
@@ -453,12 +518,37 @@
         scrollable.scrollTop = nextTop;
       }
       dispatchKey(document.activeElement || scrollable, "PageDown");
+      dispatchKey(document.activeElement || scrollable, "ArrowUp");
       dispatchKey(document.activeElement || scrollable, "ArrowDown");
       await sleep(320);
 
       const atBottom = scrollable.scrollTop + scrollable.clientHeight >= scrollable.scrollHeight - 4;
-      if (atBottom && stableNoNewRounds >= 3) break;
-      if (stableNoNewRounds >= 12) break;
+      const seenKeySize = seenByKey.size;
+      const loadedCount = collectParticipantRows(container).length;
+      const scrollDidMove = scrollable.scrollTop !== lastScrollTop;
+      const currentLastRow = collectParticipantRows(container).slice(-1)[0];
+      const currentLastRowSig = currentLastRow
+        ? `${extractNameFromRow(currentLastRow) || ""}|${extractJidFromElement(currentLastRow) || ""}|${normalizePhone(currentLastRow.textContent || "") || ""}`
+        : "";
+      const lastRowChanged = currentLastRowSig && currentLastRowSig !== lastLastRowSig;
+
+      const progressed =
+        seenKeySize !== lastSeenKeySize || loadedCount !== lastLoadedCount || scrollDidMove || lastRowChanged;
+
+      if (!progressed) {
+        stableRounds += 1;
+      } else {
+        stableRounds = 0;
+      }
+
+      lastSeenKeySize = seenKeySize;
+      lastLoadedCount = loadedCount;
+      lastScrollTop = scrollable.scrollTop;
+      lastLastRowSig = currentLastRowSig || lastLastRowSig;
+
+      const stableLimit = expected ? 120 : 60;
+      if (atBottom && stableRounds >= 6) break;
+      if (stableRounds >= stableLimit) break;
     }
 
     return expected;
