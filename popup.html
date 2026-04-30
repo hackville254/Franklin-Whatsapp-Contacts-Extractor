@@ -1,21 +1,184 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>WA Group Contacts Extractor</title>
+  <title>Franklin Whatsapp Contacts Extractor</title>
   <style>
     body {
-      width: 200px;
-      height: 100px;
+      width: 320px;
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      color: #0f172a;
+      background: #ffffff;
+    }
+
+    .container {
+      padding: 14px 14px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .title {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      margin: 0;
+    }
+
+    .subtitle {
+      margin: 0;
+      color: #475569;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    button {
+      appearance: none;
+      border: 1px solid #e2e8f0;
+      background: #0ea5e9;
+      color: white;
+      font-weight: 600;
+      font-size: 13px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      cursor: pointer;
+      flex: 1;
+    }
+
+    button:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+    }
+
+    .status {
       display: flex;
       align-items: center;
-      justify-content: center;
+      gap: 10px;
+      padding: 10px;
+      border-radius: 10px;
+      border: 1px solid #e2e8f0;
+      background: #f8fafc;
+    }
+
+    .statusText {
+      display: flex;
       flex-direction: column;
+      gap: 3px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .statusLine {
+      font-size: 12px;
+      color: #334155;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .statusMeta {
+      font-size: 11px;
+      color: #64748b;
+    }
+
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      border: 2px solid #cbd5e1;
+      border-top-color: #0ea5e9;
+      animation: spin 0.9s linear infinite;
+      display: none;
+      flex: 0 0 auto;
+    }
+
+    .spinner.active {
+      display: inline-block;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .progress {
+      height: 8px;
+      border-radius: 999px;
+      background: #e2e8f0;
+      overflow: hidden;
+      width: 100%;
+    }
+
+    .bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #22c55e, #0ea5e9);
+      transition: width 180ms ease;
+    }
+
+    .bar.indeterminate {
+      width: 40%;
+      animation: indeterminate 1.2s ease-in-out infinite;
+    }
+
+    @keyframes indeterminate {
+      0% { transform: translateX(-100%); }
+      50% { transform: translateX(60%); }
+      100% { transform: translateX(220%); }
+    }
+
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: #64748b;
+      padding-top: 2px;
+    }
+
+    .footer a {
+      color: #0ea5e9;
+      text-decoration: none;
+    }
+
+    .footer a:hover {
+      text-decoration: underline;
     }
   </style>
 </head>
 <body>
-  <h1>Extractor</h1>
-  <button id="extract">Extract Contacts</button>
+  <div class="container">
+    <h1 class="title">Franklin Whatsapp Contacts Extractor</h1>
+    <p class="subtitle">Open members list (group or community), then start export.</p>
+
+    <div class="actions">
+      <button id="extract">Export</button>
+    </div>
+
+    <div class="status" id="statusBox">
+      <span class="spinner" id="spinner" aria-hidden="true"></span>
+      <div class="statusText">
+        <div class="statusLine" id="statusLine">Ready</div>
+        <div class="statusMeta" id="statusMeta">No export running</div>
+        <div class="progress" aria-hidden="true">
+          <div class="bar" id="bar"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <span>Branddeo</span>
+      <a href="https://www.branddeo.fr/" target="_blank" rel="noreferrer">branddeo.fr</a>
+    </div>
+  </div>
+
   <script src="popup.js"></script>
 </body>
 </html>
