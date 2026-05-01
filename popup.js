@@ -105,17 +105,21 @@ document.addEventListener("DOMContentLoaded", () => {
     if (recipientsMeta) recipientsMeta.textContent = `Recipients: ${recipients.length}`;
     const has = recipients.length > 0;
     const selectedMsgCount = getSelectedMessages().length;
-    const readyMessages = selectedMsgCount >= 5;
+    const readyMessages = selectedMsgCount >= 5 && selectedMsgCount <= 55;
     if (openNextButton) openNextButton.disabled = !has || !lastTabId || !readyMessages;
     if (startSendButton) startSendButton.disabled = !has || !lastTabId || sending || !readyMessages;
     if (stopSendButton) stopSendButton.disabled = !sending;
     if (sendStatusLine && !sending) {
       if (!has) sendStatusLine.textContent = "No recipients";
-      else if (!readyMessages) sendStatusLine.textContent = "Select at least 5 messages in Settings";
+      else if (selectedMsgCount < 5) sendStatusLine.textContent = "Select at least 5 messages in Settings";
+      else if (selectedMsgCount > 55) sendStatusLine.textContent = "Select max 55 messages in Settings";
       else sendStatusLine.textContent = "Ready";
     }
+    if (sendStatusLine) {
+      sendStatusLine.classList.toggle("danger", Boolean(has && !readyMessages && !sending));
+    }
     if (sendHints) {
-      sendHints.textContent = `Needs phone numbers + at least 5 messages selected (selected: ${selectedMsgCount}).`;
+      sendHints.textContent = `Needs phone numbers + 5-55 messages selected (selected: ${selectedMsgCount}).`;
     }
   };
 
@@ -131,7 +135,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const refreshMessagePoolUi = () => {
     const selectedCount = getSelectedMessages().length;
-    if (msgPoolMeta) msgPoolMeta.textContent = `Selected: ${selectedCount} (min 5 required)`;
+    if (msgPoolMeta) msgPoolMeta.textContent = `Selected: ${selectedCount} (min 5, max 55)`;
     if (!messagesList) return;
     messagesList.innerHTML = "";
 
