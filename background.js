@@ -411,7 +411,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       cancelled: false,
       tabId: message.tabId,
       recipients: Array.isArray(message.recipients) ? message.recipients : [],
-      text: String(message.text || ""),
+      messages: Array.isArray(message.messages) ? message.messages.map((m) => String(m || "")).filter(Boolean) : [],
       randomDelay: Boolean(message.randomDelay),
       delayMinMs: Math.max(800, Number(message.delayMinMs || 1500)),
       delayMaxMs: Math.max(800, Number(message.delayMaxMs || message.delayMinMs || 1500)),
@@ -436,6 +436,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .replaceAll("{id}", id);
     };
 
+    const pickMessage = (index) => {
+      const pool = sendJob?.messages || [];
+      if (!pool.length) return "";
+      return pool[Math.floor(Math.random() * pool.length)] || pool[index % pool.length] || "";
+    };
+
     const pickDelay = () => {
       const min = Math.max(800, Number(sendJob.delayMinMs || 1500));
       const max = Math.max(min, Number(sendJob.delayMaxMs || min));
@@ -455,7 +461,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const phone = String(recipient?.phone ?? recipient?.number ?? recipient ?? "").replace(/[^\d]/g, "");
         if (!phone) continue;
 
-        const text = renderTemplate(sendJob.text, recipient, i);
+        const template = pickMessage(i);
+        const text = renderTemplate(template, recipient, i);
         sendProgress({ state: "opening", sent: i, total, detail: `Open chat ${i + 1}/${total}` });
         const opened = await uiOpenChatByPhone(sendJob.tabId, phone, 25_000);
         if (!sendJob || sendJob.cancelled) break;
@@ -489,7 +496,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const tabId = message.tabId;
     const recipient = message.recipient || {};
     const phone = String(recipient?.phone ?? recipient?.number ?? recipient ?? "").replace(/[^\d]/g, "");
-    const text = String(message.text || "");
+    const messages = Array.isArray(message.messages) ? message.messages.map((m) => String(m || "")).filter(Boolean) : [];
     (async () => {
       try {
         await chrome.scripting.executeScript({
@@ -504,6 +511,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendProgress({ state: "error_one", sent: 0, total: 1, detail: `Cannot open ${phone}` });
         return;
       }
+      const template = messages.length ? messages[Math.floor(Math.random() * messages.length)] : "";
+      const text = String(template || "")
+        .replaceAll("{phone}", phone)
+        .replaceAll("{name}", String(recipient?.name || "").trim())
+        .replaceAll("{index}", "1")
+        .replaceAll("{id}", `${Date.now().toString(36)}1`);
       if (text) await uiFillMessage(tabId, text, 15_000);
       await autoClickSend(tabId, 12_000);
       sendProgress({ state: "opened_one", sent: 1, total: 1, detail: "Sent" });

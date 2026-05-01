@@ -1,8 +1,10 @@
 document.addEventListener("DOMContentLoaded", () => {
   const tabExtract = document.getElementById("tabExtract");
   const tabSend = document.getElementById("tabSend");
+  const tabSettings = document.getElementById("tabSettings");
   const panelExtract = document.getElementById("panelExtract");
   const panelSend = document.getElementById("panelSend");
+  const panelSettings = document.getElementById("panelSettings");
 
   const extractButton = document.getElementById("extract");
   const statusLine = document.getElementById("statusLine");
@@ -15,10 +17,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const sendBar = document.getElementById("sendBar");
   const sendStatusLine = document.getElementById("sendStatusLine");
   const sendStatusMeta = document.getElementById("sendStatusMeta");
+  const sendHints = document.getElementById("sendHints");
   const importFileInput = document.getElementById("importFile");
   const singlePhoneInput = document.getElementById("singlePhone");
   const addPhoneButton = document.getElementById("addPhone");
-  const messageText = document.getElementById("messageText");
+  const msgPoolMeta = document.getElementById("msgPoolMeta");
+  const newMessageInput = document.getElementById("newMessage");
+  const addMessageButton = document.getElementById("addMessage");
+  const clearMessagesButton = document.getElementById("clearMessages");
+  const messagesList = document.getElementById("messagesList");
   const randomDelayCheckbox = document.getElementById("randomDelay");
   const delayMinMsInput = document.getElementById("delayMinMs");
   const delayMaxMsInput = document.getElementById("delayMaxMs");
@@ -30,10 +37,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const setActiveTab = (name) => {
     const isExtract = name === "extract";
+    const isSend = name === "send";
+    const isSettings = name === "settings";
     if (tabExtract) tabExtract.classList.toggle("active", isExtract);
-    if (tabSend) tabSend.classList.toggle("active", !isExtract);
+    if (tabSend) tabSend.classList.toggle("active", isSend);
+    if (tabSettings) tabSettings.classList.toggle("active", isSettings);
     if (panelExtract) panelExtract.classList.toggle("active", isExtract);
-    if (panelSend) panelSend.classList.toggle("active", !isExtract);
+    if (panelSend) panelSend.classList.toggle("active", isSend);
+    if (panelSettings) panelSettings.classList.toggle("active", isSettings);
   };
 
   const setExtractUi = ({ busy, line, meta, percent, indeterminate }) => {
@@ -72,23 +83,13 @@ document.addEventListener("DOMContentLoaded", () => {
     return out;
   };
 
-  const renderTemplate = (template, recipient, index) => {
-    const phone = String(recipient?.phone ?? "");
-    const name = String(recipient?.name ?? "");
-    const id = `${Date.now().toString(36)}${(index + 1).toString(36)}`;
-    return String(template || "")
-      .replaceAll("{phone}", phone)
-      .replaceAll("{name}", name)
-      .replaceAll("{index}", String(index + 1))
-      .replaceAll("{id}", id);
-  };
-
   let runId = null;
   let lastProgressAt = 0;
   let lastTabId = null;
   let recipients = [];
   let nextIndex = 0;
   let sending = false;
+  let messagePool = [];
 
   const ensureActiveTabId = () =>
     new Promise((resolve) => {
@@ -103,10 +104,80 @@ document.addEventListener("DOMContentLoaded", () => {
   const refreshSendUi = () => {
     if (recipientsMeta) recipientsMeta.textContent = `Recipients: ${recipients.length}`;
     const has = recipients.length > 0;
-    if (openNextButton) openNextButton.disabled = !has || !lastTabId;
-    if (startSendButton) startSendButton.disabled = !has || !lastTabId || sending;
+    const selectedMsgCount = getSelectedMessages().length;
+    const readyMessages = selectedMsgCount >= 5;
+    if (openNextButton) openNextButton.disabled = !has || !lastTabId || !readyMessages;
+    if (startSendButton) startSendButton.disabled = !has || !lastTabId || sending || !readyMessages;
     if (stopSendButton) stopSendButton.disabled = !sending;
-    if (sendStatusLine && !sending) sendStatusLine.textContent = has ? "Ready" : "No recipients";
+    if (sendStatusLine && !sending) {
+      if (!has) sendStatusLine.textContent = "No recipients";
+      else if (!readyMessages) sendStatusLine.textContent = "Select at least 5 messages in Settings";
+      else sendStatusLine.textContent = "Ready";
+    }
+    if (sendHints) {
+      sendHints.textContent = `Needs phone numbers + at least 5 messages selected (selected: ${selectedMsgCount}).`;
+    }
+  };
+
+  const saveMessagePool = async () => {
+    await chrome.storage.local.set({ branddeo_messagePool: messagePool });
+  };
+
+  const getSelectedMessages = () => {
+    return (messagePool || [])
+      .filter((m) => m?.enabled && String(m?.text || "").trim())
+      .map((m) => String(m.text).trim());
+  };
+
+  const refreshMessagePoolUi = () => {
+    const selectedCount = getSelectedMessages().length;
+    if (msgPoolMeta) msgPoolMeta.textContent = `Selected: ${selectedCount} (min 5 required)`;
+    if (!messagesList) return;
+    messagesList.innerHTML = "";
+
+    for (const msg of messagePool) {
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.gap = "10px";
+      row.style.alignItems = "center";
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = Boolean(msg.enabled);
+      cb.addEventListener("change", async () => {
+        msg.enabled = cb.checked;
+        await saveMessagePool();
+        refreshMessagePoolUi();
+      });
+
+      const txt = document.createElement("div");
+      txt.style.flex = "1";
+      txt.style.fontSize = "12px";
+      txt.style.color = "#0f172a";
+      txt.style.whiteSpace = "nowrap";
+      txt.style.overflow = "hidden";
+      txt.style.textOverflow = "ellipsis";
+      txt.textContent = String(msg.text || "");
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "Del";
+      del.style.flex = "0 0 auto";
+      del.style.width = "60px";
+      del.style.background = "#ef4444";
+      del.addEventListener("click", async () => {
+        messagePool = messagePool.filter((m) => m.id !== msg.id);
+        await saveMessagePool();
+        refreshMessagePoolUi();
+      });
+
+      row.appendChild(cb);
+      row.appendChild(txt);
+      row.appendChild(del);
+      messagesList.appendChild(row);
+    }
+
+    refreshSendUi();
   };
 
   const setRecipients = (items) => {
@@ -135,6 +206,14 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     const list = Array.isArray(data?.contacts) ? data.contacts : [];
     setRecipients(list.map((c) => ({ phone: c?.number, name: c?.name })));
+  };
+
+  const loadMessagePool = async () => {
+    const data = await new Promise((resolve) => {
+      chrome.storage.local.get(["branddeo_messagePool"], (res) => resolve(res?.branddeo_messagePool ?? []));
+    });
+    messagePool = Array.isArray(data) ? data : [];
+    refreshMessagePoolUi();
   };
 
   const onExtractorProgress = (message) => {
@@ -220,11 +299,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (tabExtract) tabExtract.addEventListener("click", () => setActiveTab("extract"));
   if (tabSend) tabSend.addEventListener("click", () => setActiveTab("send"));
+  if (tabSettings) tabSettings.addEventListener("click", () => setActiveTab("settings"));
 
   setExtractUi({ busy: false, line: "Ready", meta: "No export running", percent: 0, indeterminate: false });
   refreshSendUi();
   ensureActiveTabId().then(() => refreshSendUi());
   loadLastExtract();
+  loadMessagePool();
+
+  chrome.storage.local.remove(["openrouterKey", "openrouterModel"]);
 
   extractButton.addEventListener("click", () => {
     runId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -307,6 +390,7 @@ document.addEventListener("DOMContentLoaded", () => {
         let imported = 0;
         let importedContacts = 0;
         let totalRowsInFiles = 0;
+        let sendableRows = 0;
         const importedPhones = new Set();
 
         for (const currentFile of picked) {
@@ -326,7 +410,10 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             for (const it of items) {
               const ph = sanitizeDigits(it?.phone);
-              if (ph && ph.length >= 10) importedPhones.add(ph);
+              if (ph && ph.length >= 10) {
+                importedPhones.add(ph);
+                sendableRows += 1;
+              }
             }
             addRecipients(items);
             imported += 1;
@@ -400,7 +487,10 @@ document.addEventListener("DOMContentLoaded", () => {
           }
           for (const it of items) {
             const ph = sanitizeDigits(it?.phone);
-            if (ph && ph.length >= 10) importedPhones.add(ph);
+            if (ph && ph.length >= 10) {
+              importedPhones.add(ph);
+              sendableRows += 1;
+            }
           }
           addRecipients(items);
           imported += 1;
@@ -408,12 +498,34 @@ document.addEventListener("DOMContentLoaded", () => {
         importedContacts = importedPhones.size;
         if (sendStatusLine) sendStatusLine.textContent = `Imported contacts: ${importedContacts}`;
         if (sendStatusMeta) {
-          sendStatusMeta.textContent = `File total: ${totalRowsInFiles} | Sendable: ${importedContacts}`;
+          const missing = Math.max(0, totalRowsInFiles - sendableRows);
+          sendStatusMeta.textContent = `File total: ${totalRowsInFiles} | With phone: ${sendableRows} | Missing: ${missing}`;
         }
+        refreshSendUi();
       } catch {
         if (sendStatusLine) sendStatusLine.textContent = "Import failed";
         if (sendStatusMeta) sendStatusMeta.textContent = "File total: 0 | Sendable: 0";
       }
+    });
+  }
+
+  if (addMessageButton) {
+    addMessageButton.addEventListener("click", async () => {
+      const text = String(newMessageInput?.value || "").trim();
+      if (!text) return;
+      const msg = { id: `${Date.now()}_${Math.random().toString(16).slice(2)}`, text, enabled: true };
+      messagePool = [msg, ...(messagePool || [])];
+      await saveMessagePool();
+      if (newMessageInput) newMessageInput.value = "";
+      refreshMessagePoolUi();
+    });
+  }
+
+  if (clearMessagesButton) {
+    clearMessagesButton.addEventListener("click", async () => {
+      messagePool = [];
+      await saveMessagePool();
+      refreshMessagePoolUi();
     });
   }
 
@@ -438,14 +550,18 @@ document.addEventListener("DOMContentLoaded", () => {
     openNextButton.addEventListener("click", async () => {
       await ensureActiveTabId();
       if (!lastTabId || recipients.length === 0) return;
+      const messages = getSelectedMessages();
+      if (messages.length < 5) {
+        if (sendStatusLine) sendStatusLine.textContent = "Select at least 5 messages in Settings";
+        return;
+      }
       if (nextIndex >= recipients.length) nextIndex = 0;
       const item = recipients[nextIndex];
-      const text = renderTemplate(messageText?.value || "", item, nextIndex);
       chrome.runtime.sendMessage({
         type: "wa_sender_open_one",
         tabId: lastTabId,
         recipient: item,
-        text,
+        messages,
       });
       nextIndex += 1;
     });
@@ -455,16 +571,20 @@ document.addEventListener("DOMContentLoaded", () => {
     startSendButton.addEventListener("click", async () => {
       await ensureActiveTabId();
       if (!lastTabId || recipients.length === 0) return;
+      const messages = getSelectedMessages();
+      if (messages.length < 5) {
+        if (sendStatusLine) sendStatusLine.textContent = "Select at least 5 messages in Settings";
+        return;
+      }
       const randomDelay = Boolean(randomDelayCheckbox?.checked);
       const delayMinMs = Math.max(800, Number(delayMinMsInput?.value || 1500));
       const delayMaxMs = Math.max(delayMinMs, Number(delayMaxMsInput?.value || delayMinMs));
-      const text = String(messageText?.value || "");
 
       chrome.runtime.sendMessage({
         type: "wa_sender_start",
         tabId: lastTabId,
         recipients,
-        text,
+        messages,
         randomDelay,
         delayMinMs,
         delayMaxMs,
