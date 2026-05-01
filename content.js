@@ -586,6 +586,141 @@
     URL.revokeObjectURL(url);
   };
 
+  const toUint8 = (data) => {
+    if (!data) return new Uint8Array();
+    if (data instanceof Uint8Array) return data;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    return new Uint8Array();
+  };
+
+  const makeCrc32 = () => {
+    const table = new Uint32Array(256);
+    for (let i = 0; i < 256; i += 1) {
+      let c = i;
+      for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      table[i] = c >>> 0;
+    }
+    return (buf) => {
+      let crc = 0xffffffff;
+      const b = toUint8(buf);
+      for (let i = 0; i < b.length; i += 1) crc = table[(crc ^ b[i]) & 0xff] ^ (crc >>> 8);
+      return (crc ^ 0xffffffff) >>> 0;
+    };
+  };
+
+  const crc32 = makeCrc32();
+
+  const dosDateTime = (d) => {
+    const dt = d instanceof Date ? d : new Date();
+    const year = Math.max(1980, dt.getFullYear());
+    const month = dt.getMonth() + 1;
+    const day = dt.getDate();
+    const hours = dt.getHours();
+    const minutes = dt.getMinutes();
+    const seconds = Math.floor(dt.getSeconds() / 2);
+    const dosTime = (hours << 11) | (minutes << 5) | seconds;
+    const dosDate = ((year - 1980) << 9) | (month << 5) | day;
+    return { dosTime, dosDate };
+  };
+
+  const concatUint8 = (parts) => {
+    const total = parts.reduce((sum, p) => sum + (p?.length || 0), 0);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const p of parts) {
+      if (!p?.length) continue;
+      out.set(p, offset);
+      offset += p.length;
+    }
+    return out;
+  };
+
+  const u16 = (n) => {
+    const a = new Uint8Array(2);
+    new DataView(a.buffer).setUint16(0, n >>> 0, true);
+    return a;
+  };
+
+  const u32 = (n) => {
+    const a = new Uint8Array(4);
+    new DataView(a.buffer).setUint32(0, n >>> 0, true);
+    return a;
+  };
+
+  const createZipBlob = (entries, { modifiedAt } = {}) => {
+    const encoder = new TextEncoder();
+    const { dosTime, dosDate } = dosDateTime(modifiedAt);
+    const localParts = [];
+    const centralParts = [];
+    let localOffset = 0;
+
+    const files = Array.isArray(entries) ? entries : [];
+    for (const file of files) {
+      const name = String(file?.name || "").replace(/^\/+/, "");
+      const nameBytes = encoder.encode(name);
+      const data = toUint8(file?.data);
+      const crc = crc32(data);
+      const size = data.length >>> 0;
+      const flags = 0x0800;
+
+      const localHeader = concatUint8([
+        u32(0x04034b50),
+        u16(20),
+        u16(flags),
+        u16(0),
+        u16(dosTime),
+        u16(dosDate),
+        u32(crc),
+        u32(size),
+        u32(size),
+        u16(nameBytes.length),
+        u16(0),
+        nameBytes,
+      ]);
+      localParts.push(localHeader, data);
+
+      const centralHeader = concatUint8([
+        u32(0x02014b50),
+        u16(20),
+        u16(20),
+        u16(flags),
+        u16(0),
+        u16(dosTime),
+        u16(dosDate),
+        u32(crc),
+        u32(size),
+        u32(size),
+        u16(nameBytes.length),
+        u16(0),
+        u16(0),
+        u16(0),
+        u16(0),
+        u32(0),
+        u32(localOffset),
+        nameBytes,
+      ]);
+      centralParts.push(centralHeader);
+
+      localOffset += localHeader.length + data.length;
+    }
+
+    const centralDir = concatUint8(centralParts);
+    const centralOffset = localOffset;
+    const end = concatUint8([
+      u32(0x06054b50),
+      u16(0),
+      u16(0),
+      u16(files.length),
+      u16(files.length),
+      u32(centralDir.length),
+      u32(centralOffset),
+      u16(0),
+    ]);
+
+    return new Blob([...localParts, centralDir, end], { type: "application/zip" });
+  };
+
   const buildExportRows = (contacts) => {
     const rows = contacts.map((c) => {
       const name = String(c.name || "").trim();
@@ -608,6 +743,74 @@
     });
 
     return rows;
+  };
+
+  const buildSendRows = (contacts) => {
+    const full = buildExportRows(contacts);
+    const withNumber = full.filter((r) => String(r.Numero || "").trim());
+    return withNumber.map((r) => ({ Nom: r.Nom, Numero: r.Numero }));
+  };
+
+  const buildNumbersWorkbookArray = (rows, { groupTitle, extractedAt, partLabel }) => {
+    const XLSX = window.XLSX;
+    if (!XLSX?.utils || !XLSX?.write) return null;
+
+    const wb = XLSX.utils.book_new();
+    const wsContacts = XLSX.utils.json_to_sheet(rows, { header: ["Nom", "Numero"] });
+    wsContacts["!cols"] = [{ wch: 34 }, { wch: 20 }];
+    wsContacts["!autofilter"] = { ref: `A1:B${rows.length + 1}` };
+    XLSX.utils.book_append_sheet(wb, wsContacts, "Contacts");
+
+    const extractedAtText = extractedAt.toLocaleString();
+    const wsSummary = XLSX.utils.aoa_to_sheet([
+      ["Group", groupTitle],
+      ["Extracted at", extractedAtText],
+      ["Total numbers", rows.length],
+      ["Part", partLabel || "ALL"],
+      ["Source", "WhatsApp Web"],
+    ]);
+    wsSummary["!cols"] = [{ wch: 14 }, { wch: 48 }];
+    XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
+
+    return XLSX.write(wb, { bookType: "xlsx", type: "array" });
+  };
+
+  const downloadZipNumbersIfAvailable = async (contacts, { groupTitle, extractedAt }) => {
+    const XLSX = window.XLSX;
+    if (!XLSX?.utils || !XLSX?.write) return false;
+
+    const sendRows = buildSendRows(contacts);
+    if (!sendRows.length) return false;
+
+    const chunkSize = 50;
+    const partsCount = Math.ceil(sendRows.length / chunkSize);
+    const pad3 = (n) => String(n).padStart(3, "0");
+
+    report({
+      stage: "Exporting...",
+      detail: `Building zip (numbers: ${sendRows.length}, parts: ${partsCount})`,
+      indeterminate: true,
+      percent: 100,
+    });
+
+    const files = [];
+    const fullArray = buildNumbersWorkbookArray(sendRows, { groupTitle, extractedAt, partLabel: "ALL" });
+    if (!fullArray) return false;
+    files.push({ name: "All_Numbers.xlsx", data: fullArray });
+
+    for (let p = 0; p < partsCount; p += 1) {
+      const start = p * chunkSize;
+      const chunk = sendRows.slice(start, start + chunkSize);
+      const partLabel = `${p + 1}/${partsCount}`;
+      const arr = buildNumbersWorkbookArray(chunk, { groupTitle, extractedAt, partLabel });
+      if (!arr) continue;
+      files.push({ name: `Part_${pad3(p + 1)}.xlsx`, data: arr });
+    }
+
+    const zipBlob = createZipBlob(files, { modifiedAt: extractedAt });
+    const filename = `WhatsApp_${sanitizeFilenamePart(groupTitle)}_Numbers_${formatDateTimeForFilename(extractedAt)}.zip`;
+    downloadBlob(zipBlob, filename);
+    return true;
   };
 
   const downloadXlsxIfAvailable = (contacts, { groupTitle, extractedAt }) => {
@@ -727,9 +930,10 @@
     const extractedAt = new Date();
 
     report({ stage: "Exporting...", detail: "Generating file", indeterminate: true, percent: 100 });
-    const exportedXlsx = downloadXlsxIfAvailable(contacts, { groupTitle, extractedAt });
-    if (!exportedXlsx) {
-      downloadCsv(contacts, { groupTitle, extractedAt });
+    const exportedZip = await downloadZipNumbersIfAvailable(contacts, { groupTitle, extractedAt });
+    if (!exportedZip) {
+      const exportedXlsx = downloadXlsxIfAvailable(contacts, { groupTitle, extractedAt });
+      if (!exportedXlsx) downloadCsv(contacts, { groupTitle, extractedAt });
     }
 
     try {

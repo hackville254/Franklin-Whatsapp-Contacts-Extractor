@@ -27,6 +27,61 @@ const sendProgress = (payload) => {
   } catch {}
 };
 
+const sanitizeDigits = (value) => String(value || "").replace(/[^\d]/g, "");
+
+const estimateEtaMs = ({
+  startedAt,
+  processed,
+  total,
+  randomDelay,
+  delayMinMs,
+  delayMaxMs,
+  batchSize,
+  batchPauseMinMs,
+  batchPauseMaxMs,
+}) => {
+  const remaining = Math.max(0, Number(total || 0) - Number(processed || 0));
+  if (remaining <= 0) return 0;
+
+  const avgPause = (Number(batchPauseMinMs || 0) + Number(batchPauseMaxMs || 0)) / 2;
+  const remainingBreaks = batchSize ? Math.floor(remaining / batchSize) : 0;
+
+  const min = Math.max(800, Number(delayMinMs || 6000));
+  const max = Math.max(min, Number(delayMaxMs || min));
+  const avgDelay = randomDelay ? (min + max) / 2 : min;
+
+  const now = Date.now();
+  const processedN = Math.max(0, Number(processed || 0));
+  if (processedN >= 3 && Number.isFinite(Number(startedAt)) && startedAt > 0) {
+    const avgPer = Math.max(1000, (now - startedAt) / processedN);
+    return Math.round(avgPer * remaining + remainingBreaks * avgPause);
+  }
+
+  const baseUiMs = 9000;
+  return Math.round((baseUiMs + avgDelay) * remaining + remainingBreaks * avgPause);
+};
+
+const pauseWithProgress = async ({ tabId, ms, processed, total, etaBaseMs }) => {
+  let remaining = Math.max(0, Number(ms || 0));
+  const tickEvery = 5000;
+  while (remaining > 0) {
+    if (sendJob?.cancelled) return false;
+    sendProgress({
+      state: "pause_batch",
+      sent: processed,
+      total,
+      detail: `Batch pause (${Math.ceil(remaining / 1000)}s)`,
+      pauseLeftMs: remaining,
+      etaMs: Math.max(0, Number(etaBaseMs || 0) + remaining),
+    });
+    const step = Math.min(tickEvery, remaining);
+    const ok = await sleepCancelable(step);
+    if (!ok) return false;
+    remaining -= step;
+  }
+  return !sendJob?.cancelled;
+};
+
 const waitForTabComplete = (tabId, timeoutMs) => {
   return new Promise((resolve) => {
     const startedAt = Date.now();
@@ -407,15 +462,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "wa_sender_start") {
+    const rawRecipients = Array.isArray(message.recipients) ? message.recipients : [];
+    const recipients = rawRecipients
+      .map((r) => {
+        const phone = sanitizeDigits(r?.phone ?? r?.number ?? r);
+        if (!phone || phone.length < 10) return null;
+        return { phone, name: String(r?.name || "").trim() };
+      })
+      .filter(Boolean);
+
     sendJob = {
       cancelled: false,
       tabId: message.tabId,
-      recipients: Array.isArray(message.recipients) ? message.recipients : [],
+      recipients,
       messages: Array.isArray(message.messages) ? message.messages.map((m) => String(m || "")).filter(Boolean) : [],
       randomDelay: Boolean(message.randomDelay),
-      delayMinMs: Math.max(800, Number(message.delayMinMs || 1500)),
-      delayMaxMs: Math.max(800, Number(message.delayMaxMs || message.delayMinMs || 1500)),
+      delayMinMs: Math.max(800, Number(message.delayMinMs || 6000)),
+      delayMaxMs: Math.max(800, Number(message.delayMaxMs || message.delayMinMs || 12000)),
       index: 0,
+      startedAt: Date.now(),
+      batchSize: 10,
+      batchPauseMinMs: 60_000,
+      batchPauseMaxMs: 180_000,
     };
 
     chrome.scripting.executeScript({
@@ -451,40 +519,154 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     (async () => {
       const total = sendJob.recipients.length;
-      sendProgress({ state: "start", sent: 0, total, detail: "Starting..." });
+      sendProgress({
+        state: "start",
+        sent: 0,
+        total,
+        detail: "Starting...",
+        etaMs: estimateEtaMs({
+          startedAt: sendJob.startedAt,
+          processed: 0,
+          total,
+          randomDelay: sendJob.randomDelay,
+          delayMinMs: sendJob.delayMinMs,
+          delayMaxMs: sendJob.delayMaxMs,
+          batchSize: sendJob.batchSize,
+          batchPauseMinMs: sendJob.batchPauseMinMs,
+          batchPauseMaxMs: sendJob.batchPauseMaxMs,
+        }),
+      });
 
       for (let i = 0; i < total; i += 1) {
         if (!sendJob || sendJob.cancelled) break;
         sendJob.index = i;
 
         const recipient = sendJob.recipients[i];
-        const phone = String(recipient?.phone ?? recipient?.number ?? recipient ?? "").replace(/[^\d]/g, "");
+        const phone = sanitizeDigits(recipient?.phone ?? recipient?.number ?? recipient);
         if (!phone) continue;
 
         const template = pickMessage(i);
         const text = renderTemplate(template, recipient, i);
-        sendProgress({ state: "opening", sent: i, total, detail: `Open chat ${i + 1}/${total}` });
+        sendProgress({
+          state: "opening",
+          sent: i,
+          total,
+          detail: `Open chat ${i + 1}/${total}`,
+          etaMs: estimateEtaMs({
+            startedAt: sendJob.startedAt,
+            processed: i,
+            total,
+            randomDelay: sendJob.randomDelay,
+            delayMinMs: sendJob.delayMinMs,
+            delayMaxMs: sendJob.delayMaxMs,
+            batchSize: sendJob.batchSize,
+            batchPauseMinMs: sendJob.batchPauseMinMs,
+            batchPauseMaxMs: sendJob.batchPauseMaxMs,
+          }),
+        });
         const opened = await uiOpenChatByPhone(sendJob.tabId, phone, 25_000);
         if (!sendJob || sendJob.cancelled) break;
         if (!opened) {
-          sendProgress({ state: "error_one", sent: i, total, detail: `Cannot open ${phone}` });
+          const etaBaseMs = estimateEtaMs({
+            startedAt: sendJob.startedAt,
+            processed: i + 1,
+            total,
+            randomDelay: sendJob.randomDelay,
+            delayMinMs: sendJob.delayMinMs,
+            delayMaxMs: sendJob.delayMaxMs,
+            batchSize: sendJob.batchSize,
+            batchPauseMinMs: sendJob.batchPauseMinMs,
+            batchPauseMaxMs: sendJob.batchPauseMaxMs,
+          });
+          sendProgress({ state: "error_one", sent: i + 1, total, detail: `Cannot open ${phone}`, etaMs: etaBaseMs });
           await sleepCancelable(pickDelay());
+          if (!sendJob || sendJob.cancelled) break;
+          if (sendJob.batchSize && (i + 1) % sendJob.batchSize === 0 && i + 1 < total) {
+            const pauseMs = Math.floor(
+              sendJob.batchPauseMinMs + Math.random() * (sendJob.batchPauseMaxMs - sendJob.batchPauseMinMs + 1)
+            );
+            const nextEtaBase = estimateEtaMs({
+              startedAt: sendJob.startedAt,
+              processed: i + 1,
+              total,
+              randomDelay: sendJob.randomDelay,
+              delayMinMs: sendJob.delayMinMs,
+              delayMaxMs: sendJob.delayMaxMs,
+              batchSize: sendJob.batchSize,
+              batchPauseMinMs: sendJob.batchPauseMinMs,
+              batchPauseMaxMs: sendJob.batchPauseMaxMs,
+            });
+            await pauseWithProgress({ tabId: sendJob.tabId, ms: pauseMs, processed: i + 1, total, etaBaseMs: nextEtaBase });
+          }
           continue;
         }
 
         await uiFillMessage(sendJob.tabId, text, 15_000);
         if (!sendJob || sendJob.cancelled) break;
 
-        sendProgress({ state: "sending", sent: i, total, detail: "Clicking send..." });
+        sendProgress({
+          state: "sending",
+          sent: i,
+          total,
+          detail: "Clicking send...",
+          etaMs: estimateEtaMs({
+            startedAt: sendJob.startedAt,
+            processed: i,
+            total,
+            randomDelay: sendJob.randomDelay,
+            delayMinMs: sendJob.delayMinMs,
+            delayMaxMs: sendJob.delayMaxMs,
+            batchSize: sendJob.batchSize,
+            batchPauseMinMs: sendJob.batchPauseMinMs,
+            batchPauseMaxMs: sendJob.batchPauseMaxMs,
+          }),
+        });
         await autoClickSend(sendJob.tabId, 12_000);
         if (!sendJob || sendJob.cancelled) break;
 
-        sendProgress({ state: "done_one", sent: i + 1, total, detail: `${i + 1}/${total}` });
+        const etaBaseMs = estimateEtaMs({
+          startedAt: sendJob.startedAt,
+          processed: i + 1,
+          total,
+          randomDelay: sendJob.randomDelay,
+          delayMinMs: sendJob.delayMinMs,
+          delayMaxMs: sendJob.delayMaxMs,
+          batchSize: sendJob.batchSize,
+          batchPauseMinMs: sendJob.batchPauseMinMs,
+          batchPauseMaxMs: sendJob.batchPauseMaxMs,
+        });
+        sendProgress({ state: "done_one", sent: i + 1, total, detail: `${i + 1}/${total}`, etaMs: etaBaseMs });
         await sleepCancelable(pickDelay());
+        if (!sendJob || sendJob.cancelled) break;
+
+        if (sendJob.batchSize && (i + 1) % sendJob.batchSize === 0 && i + 1 < total) {
+          const pauseMs = Math.floor(
+            sendJob.batchPauseMinMs + Math.random() * (sendJob.batchPauseMaxMs - sendJob.batchPauseMinMs + 1)
+          );
+          const nextEtaBase = estimateEtaMs({
+            startedAt: sendJob.startedAt,
+            processed: i + 1,
+            total,
+            randomDelay: sendJob.randomDelay,
+            delayMinMs: sendJob.delayMinMs,
+            delayMaxMs: sendJob.delayMaxMs,
+            batchSize: sendJob.batchSize,
+            batchPauseMinMs: sendJob.batchPauseMinMs,
+            batchPauseMaxMs: sendJob.batchPauseMaxMs,
+          });
+          await pauseWithProgress({ tabId: sendJob.tabId, ms: pauseMs, processed: i + 1, total, etaBaseMs: nextEtaBase });
+        }
       }
 
       const finished = Boolean(sendJob && !sendJob.cancelled);
-      sendProgress({ state: finished ? "done" : "stopped", sent: (sendJob?.index ?? -1) + 1, total });
+      const finalSent = (sendJob?.index ?? -1) + 1;
+      sendProgress({
+        state: finished ? "done" : "stopped",
+        sent: finalSent,
+        total,
+        etaMs: 0,
+        detail: finished ? "Done" : "Stopped",
+      });
       sendJob = null;
     })();
 

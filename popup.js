@@ -274,6 +274,18 @@ document.addEventListener("DOMContentLoaded", () => {
     const sent = Number(message.sent || 0);
     const state = String(message.state || "");
     const detail = String(message.detail || "");
+    const etaMs = Number.isFinite(Number(message.etaMs)) ? Number(message.etaMs) : null;
+    const pauseLeftMs = Number.isFinite(Number(message.pauseLeftMs)) ? Number(message.pauseLeftMs) : null;
+
+    const formatDuration = (ms) => {
+      const totalSec = Math.max(0, Math.round(Number(ms || 0) / 1000));
+      const h = Math.floor(totalSec / 3600);
+      const m = Math.floor((totalSec % 3600) / 60);
+      const s = totalSec % 60;
+      const pad2 = (n) => String(n).padStart(2, "0");
+      if (h > 0) return `${h}:${pad2(m)}:${pad2(s)}`;
+      return `${m}:${pad2(s)}`;
+    };
 
     const running = state !== "done" && state !== "stopped" && state !== "error";
     sending = running;
@@ -286,7 +298,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (sendStatusMeta) {
       const remaining = Math.max(0, total - sent);
-      sendStatusMeta.textContent = `Sent: ${sent} | Remaining: ${remaining}`;
+      const etaText = etaMs != null ? ` | ETA: ${formatDuration(etaMs)}` : "";
+      const pauseText = pauseLeftMs != null ? ` | Pause: ${formatDuration(pauseLeftMs)}` : "";
+      sendStatusMeta.textContent = `Sent: ${sent} | Remaining: ${remaining}${etaText}${pauseText}`;
     }
     if (sendBar) {
       const percent = total ? Math.round((sent / total) * 100) : 0;
